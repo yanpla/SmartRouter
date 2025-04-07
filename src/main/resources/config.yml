@@ -1,0 +1,8 @@
+file-version: 1
+
+intercept-servers:
+  - spawn
+
+remember-servers:
+  - spawn
+  - smp

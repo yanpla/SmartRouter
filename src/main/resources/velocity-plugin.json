@@ -1,0 +1,7 @@
+{
+  "id": "smartrouter",
+  "name": "SmartRouter",
+  "version": "0.0.1",
+  "authors": ["yanpla"],
+  "main": "nl.yanpla.smartrouter.SmartRouter"
+}
