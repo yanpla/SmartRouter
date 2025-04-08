@@ -2,14 +2,13 @@ package nl.yanpla.smartrouter;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.URISyntaxException;
 import java.nio.file.Path;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.google.inject.name.Named;
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.LoginEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
@@ -39,33 +38,23 @@ import com.velocitypowered.api.proxy.ProxyServer;
 		version = "0.0.1",
 		authors = { "yanpla" })
 public final class SmartRouter {
-
-	private static SmartRouter instance;
-
 	private final ProxyServer server;
 	private final Logger logger;
-	private final File dataFolder;
-	private final File file;
 	private final String name;
 	private boolean hasLuckPerms;
 	private LuckPermsHandler handler;
 
+	private final Map<UUID, String> lastServerCache = new ConcurrentHashMap<>();
+
 	private static YamlDocument config;
+
+	private List<String> interceptServers;
+	private List<String> rememberServers;
 
 	@Inject
 	public SmartRouter(ProxyServer server, Logger logger, @DataDirectory Path dataFolder) {
-		instance = this;
-
 		this.server = server;
 		this.logger = logger;
-		this.dataFolder = new File(dataFolder.toFile().getParentFile(), this.getClass().getAnnotation(Plugin.class).name());
-
-		try {
-			this.file = new File(getClass().getProtectionDomain().getCodeSource().getLocation().toURI());
-
-		} catch (final URISyntaxException ex) {
-			throw new RuntimeException(ex);
-		}
 
 		try {
 			config = YamlDocument.create(new File(dataFolder.toFile(), "config.yml"),
@@ -102,42 +91,50 @@ public final class SmartRouter {
 			handler = new LuckPermsHandler(api);
 			this.onEnable();
 		} else {
-			getLogger().warn("LuckPerms not found, Disabling plugin.");
+			logger.warn("LuckPerms not found, Disabling plugin.");
 			this.onDisable();
 		}
+	}
+
+	@Subscribe
+	public void onPlayerLogin(LoginEvent event) {
+		UUID uuid = event.getPlayer().getUniqueId();
+		handler.getLastServerName(uuid).thenAccept(lastServerName -> {
+			if (lastServerName != null) {
+				lastServerCache.put(uuid, lastServerName);
+			}
+		});
 	}
 
 	@Subscribe
 	public void onServerPreConnect(ServerPreConnectEvent event) {
 		String target = event.getOriginalServer().getServerInfo().getName();
 
-		List<String> interceptServers = config.getStringList(Route.from("intercept-servers"));
 		if (!interceptServers.contains(target)) return;
 
 		// if the player is already on the server, do nothing
 		if (event.getPreviousServer() != null) {
-			String originalServer = event.getPreviousServer().getServerInfo().getName();
-			List<String> rememberServers = config.getStringList(Route.from("remember-servers"));
-			if (rememberServers.contains(originalServer)) {
-				return;
-			}
+			String prev = event.getPreviousServer().getServerInfo().getName();
+			if (rememberServers.contains(prev)) return;
 		}
 
-		handler.getLastServerName(event.getPlayer().getUniqueId()).thenAcceptAsync(lastServerName -> {
-			if (lastServerName != null) {
-				getServer().getServer(lastServerName).ifPresent((registeredServer) -> {
-					event.setResult(ServerPreConnectEvent.ServerResult.allowed(registeredServer));
-				});
-			}
-		}).join();
+		UUID uuid = event.getPlayer().getUniqueId();
+		String lastServer = lastServerCache.get(uuid);
+		if (lastServer != null) {
+			server.getServer(lastServer).ifPresent(server -> {
+				event.setResult(ServerPreConnectEvent.ServerResult.allowed(server));
+			});
+		}
 	}
 
 	@Subscribe
-	public void onServerChange(ServerConnectedEvent serverConnectedEvent) {
-		List<String> rememberServers = config.getStringList(Route.from("remember-servers"));
-		String serverName = serverConnectedEvent.getServer().getServerInfo().getName();
-		if (!rememberServers.contains(serverName)) return;
-		handler.setLastServerName(serverConnectedEvent.getPlayer().getUniqueId(), serverName);
+	public void onServerChange(ServerConnectedEvent event) {
+		String name = event.getServer().getServerInfo().getName();
+		if (!rememberServers.contains(name)) return;
+
+		UUID uuid = event.getPlayer().getUniqueId();
+		lastServerCache.put(uuid, name);
+		handler.setLastServerName(uuid, name);
 	}
 
 	@Subscribe
@@ -146,42 +143,18 @@ public final class SmartRouter {
 	}
 
 	public void onLoad() {
-		System.out.println(this.name + " loaded.");
+		// Load config
+		interceptServers = config.getStringList(Route.from("intercept-servers"));
+		rememberServers = config.getStringList(Route.from("remember-servers"));
+
+        logger.info("{} loaded.", this.name);
 	}
 
 	public void onEnable() {
-		System.out.println(this.name + " enabled");
+        logger.info("{} enabled", this.name);
 	}
 
 	public void onDisable() {
-		System.out.println(this.name + " disabled");
-	}
-
-	public ProxyServer getServer() {
-		return server;
-	}
-
-	public Logger getLogger() {
-		return logger;
-	}
-
-	public File getDataFolder() {
-		return dataFolder;
-	}
-
-	public File getFile() {
-		return file;
-	}
-
-	public String getName() {
-		return name;
-	}
-
-	public static SmartRouter getInstance() {
-		return instance;
-	}
-
-	public boolean hasLuckPerms() {
-		return hasLuckPerms;
+        logger.info("{} disabled", this.name);
 	}
 }
