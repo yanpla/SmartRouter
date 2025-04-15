@@ -38,7 +38,7 @@ import com.velocitypowered.api.proxy.ProxyServer;
 */
 @Plugin(id = "smartrouter",
 		name = "SmartRouter",
-		version = "0.0.1",
+		version = "0.0.2",
 		authors = { "yanpla" })
 public final class SmartRouter {
 	private final ProxyServer server;
