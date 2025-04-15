@@ -1,4 +1,4 @@
-file-version: 1
+file-version: 2
 
 intercept-servers:
   - spawn
@@ -6,3 +6,6 @@ intercept-servers:
 remember-servers:
   - spawn
   - smp
+
+queue-compatibility: false
+queue-redirect-delay: 100

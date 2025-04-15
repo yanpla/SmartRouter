@@ -4,7 +4,10 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 import com.google.inject.name.Named;
 import com.velocitypowered.api.event.Subscribe;
@@ -50,6 +53,8 @@ public final class SmartRouter {
 
 	private List<String> interceptServers;
 	private List<String> rememberServers;
+	private boolean queueCompatibility;
+	private int queueRedirectDelay;
 
 	@Inject
 	public SmartRouter(ProxyServer server, Logger logger, @DataDirectory Path dataFolder) {
@@ -108,6 +113,7 @@ public final class SmartRouter {
 
 	@Subscribe
 	public void onServerPreConnect(ServerPreConnectEvent event) {
+		if (queueCompatibility) return;
 		String target = event.getOriginalServer().getServerInfo().getName();
 
 		if (!interceptServers.contains(target)) return;
@@ -129,12 +135,69 @@ public final class SmartRouter {
 
 	@Subscribe
 	public void onServerChange(ServerConnectedEvent event) {
-		String name = event.getServer().getServerInfo().getName();
-		if (!rememberServers.contains(name)) return;
+		// Get the name of the server the player is connecting to.
+		String current = event.getServer().getServerInfo().getName();
+
+		// Only proceed if the current server is either a server we need to remember
+		// OR a server we might intercept for redirection.
+		if (!rememberServers.contains(current) && !interceptServers.contains(current)) return;
 
 		UUID uuid = event.getPlayer().getUniqueId();
-		lastServerCache.put(uuid, name);
-		handler.setLastServerName(uuid, name);
+
+		// ---------------------------------------
+		// Compatibility & Redirection Logic
+		// ---------------------------------------
+		// If the queue compatibility mode is enabled and the current server is in the intercept list...
+		if (queueCompatibility && interceptServers.contains(current)) {
+			// If there is a previous server, and it is one we remember,
+			// then just cache the current server and do not redirect.
+			if (event.getPreviousServer().isPresent()) {
+				String prev = event.getPreviousServer().get().getServerInfo().getName();
+				if (rememberServers.contains(prev)) {
+					cacheServer(uuid, current);
+					return;
+				}
+			}
+
+			// Check if we have a previously remembered server for the player.
+			String lastServer = lastServerCache.get(uuid);
+			// If such a server exists, and it's different from the current server...
+			if (lastServer != null && !lastServer.equals(current)) {
+				// Get the target server from Velocity.
+				server.getServer(lastServer).ifPresent(targetServer -> {
+					try {
+						// Optionally, ping the target server to ensure it is reachable.
+						targetServer.ping().join();
+					} catch (CancellationException | CompletionException ex) {
+						logger.error("Error pinging server: {}", lastServer, ex);
+					}
+
+					// Schedule the redirection task with a delay (here 100ms)
+					// to avoid interfering with the existing connection process.
+					server.getScheduler().buildTask(this, () -> {
+						// Fire the connection request to the target server.
+						event.getPlayer().createConnectionRequest(targetServer).fireAndForget();
+
+						// Cache the server name the player was redirected to.
+						String redirectedTo = targetServer.getServerInfo().getName();
+						cacheServer(uuid, redirectedTo);
+					}).delay(queueRedirectDelay, TimeUnit.MILLISECONDS).schedule();
+				});
+
+				// Exit to prevent the normal caching of the intercepted server.
+				return;
+			}
+		}
+
+		// ---------------------------------------
+		// Fallback: Cache current server if no redirection took place.
+		// ---------------------------------------
+		cacheServer(uuid, current);
+	}
+
+	private void cacheServer(UUID uuid, String server) {
+		lastServerCache.put(uuid, server);
+		handler.setLastServerName(uuid, server);
 	}
 
 	@Subscribe
@@ -146,6 +209,8 @@ public final class SmartRouter {
 		// Load config
 		interceptServers = config.getStringList(Route.from("intercept-servers"));
 		rememberServers = config.getStringList(Route.from("remember-servers"));
+		queueCompatibility = config.getBoolean(Route.from("queue-compatibility"));
+		queueRedirectDelay = config.getInt(Route.from("queue-redirect-delay"));
 
         logger.info("{} loaded.", this.name);
 	}
